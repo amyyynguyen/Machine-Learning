@@ -1,0 +1,497 @@
+---
+title: "PSTAT131 Final Project"
+author: "Amy Nguyen"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Introduction
+In this project, I will be implementing Machine Learning to create a model that predicts Fitbit Sleep Scores.
+
+#### About Fitbit
+Fitbit is one of the leading American consumer electronics company, best known for their fitness trackers and smartwatches. Alongside their line of products is their Fitbit mobile application where users can sync their Fitbit device via bluetooth.
+
+![](/Users/amynguyen/Documents/PSTAT131/Final Project/fitbitapp.png){fig.width=3,fig.height=2}
+
+The app displays a detailed summary of the tracker's data such as daily steps, activity, calories, sleep, heart rate, etc. This project will primarily focus on Fitbit's sleep tracking capabilities, and more notably Sleep Score.
+
+#### What is a Sleep Score?
+A nightly sleep score is a score out of 100 based on the user's quality of sleep that night. If wearing the device to bed, Fitbit tracks a breakdown of the time spent in different stages of sleep. Within the app, users can view time asleep and time spent in each stage of sleep:
+
+1. Awake
+2. REM
+3. Light
+4. Deep
+
+Below are screenshots from my own Fitbit app to better visualize the interface.
+
+![](/Users/amynguyen/Documents/PSTAT131/Final Project/IMG_6062.jpg){fig.height=3, fig.width=1} ![](/Users/amynguyen/Documents/PSTAT131/Final Project/IMG_6062.jpg){fig.height=3, fig.width=1}
+
+The company [website](https://help.fitbit.com/articles/en_US/Help_article/2439.htm) defines sleep score: 
+
+*"Your overall nightly sleep score is based on your heart rate, the time you spend awake or restless, and your sleep stages."*
+
+
+#### My Personal Dataset 
+![Fitbit Alta HR](/Users/amynguyen/Documents/PSTAT131/Final Project/fitbit_pic.png){out.height=25%,out.width=25%}
+
+For this project, I chose to use my own personal dataset from my own Fitbit Alta HR device. While there are extensive Fitbit datasets available, I couldn't find any datasets on Fitbit users' sleep data with associated sleep scores. Fitbit allows users to download personal data collected by their Fitbit tracker into CSV files, which ultimately inspired me to analyze and build a model on my own personal Fitbit data.  
+
+>![](/Users/amynguyen/Documents/PSTAT131/Final Project/export_ss.png){out.height=25%,out.width=25%}
+
+I was able to download my tracker's dataset on my sleep for the entire lifetime of my tracker, but this is where things got complicated and laborous. Frustratingly enough, the only relevant statistic provided was sleep score, resting heart rate, and restlessnessless. Other relevant data such as time asleep in the different stages of sleep was not part of this dataset. In order to retrieve this information,, I had to manually export my sleep data, but Fitbit only allows a maximum of 31 days of data to be exported a time. I exported the CSV files month by month (dating back to August 2019) and saved all the sleep statistics data saved into one CSV file as my_sleep.csv. 
+
+## Data Cleaning & Wrangling
+Now that I finally had both CSV files, I could begin cleaning up the data. To start, I loaded the following packages:
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(tidyverse)
+library(tidyr)
+library(randomForest)
+library(gbm)
+library(glmnet)
+library(lubridate)
+library(Metrics)
+library(tree)
+library(caret)
+library(maptree)
+library(class)
+```
+
+The dataset ranges from Aug 2019 - March 2022, however, it is important to note that there were gaps where I did not wear device for nearly a year because silly me lost and didn't replace the charging cord. Other explanations for missing values in the dataset are also be due to charging my Fitbit overnight, dead battery in the middle of the day, and therefore having no sleep data recorded for the night. 
+
+```{r data cleaning, message=FALSE, warning=FALSE}
+sleep_score_data = read_csv('sleep_score.csv')
+my_sleep = read_csv('my_sleep.csv')
+```
+
+The dates in `sleep_score_data` and `my_sleep` are in difference formats. To fix this, I took a substring of `timestamp` and of `End Time`, only keeping the year, month and year, and added to a new column `date` in both dataframes.
+
+```{r data manipulation}
+# Take substring of timestamp to format dates the same in both dataframes 
+# Add substrings to new column 'date' 
+sleep_score_data$date = substr(sleep_score_data$timestamp, 1, 10)
+my_sleep$date = substr(my_sleep$'End Time', 1, 10)
+```
+
+```{r message=FALSE, warning=FALSE}
+sleep_score_data <- sleep_score_data[, c('date', 'resting_heart_rate', 'restlessness', 'overall_score')] 
+my_sleep <- my_sleep[, c('date', 'Minutes Asleep', 'Minutes Awake', 
+                         'Number of Awakenings', 'Time in Bed', 
+                         'Minutes REM Sleep', 'Minutes Light Sleep', 
+                         'Minutes Deep Sleep')]
+```
+
+The two data frames are merged by `date` and loaded into a new data frame, `sleep_data`.There are 158 observations in `sleep_data`, 27 of which are missing values.
+
+```{r message=FALSE, warning=FALSE}
+# Merge dataframes by date and rename columns
+sleep_data <- merge(my_sleep, sleep_score_data, by = 'date')
+
+# Rename columns
+sleep_data <- sleep_data %>%   
+  select(-date) %>% 
+  drop_na() %>% 
+  rename(min_asleep = 'Minutes Asleep',
+         min_awake = 'Minutes Awake',
+         awakenings = 'Number of Awakenings',
+         time_bed = 'Time in Bed',
+         rem = 'Minutes REM Sleep',
+         light_sleep = 'Minutes Light Sleep',
+         deep_sleep = 'Minutes Deep Sleep',
+         resting_hr = resting_heart_rate,
+         restless = restlessness,
+         sleep_score = overall_score) %>% 
+  mutate(restless = restless*100)
+head(sleep_data)
+```
+
+## Exploratory Data Analysis
+
+There are 149 total observations in `sleep_data`, where each row represents a different day. 
+
+```{r}
+summary(sleep_data)
+```
+
+To better visualize the data, I graphed each of the predictors against `sleep_score`. From the plots it appears that for the most part all predictors have a positive relationship with `sleep_score`. `restless` is the only variable that has an obvious negative relationship with `sleep_score`. This makes sense because as the percentage of time asleep in restlessness increases, sleep quality should decrease. I would have expected `min_awake` to have a negatively affect sleep score, but as `min_awake` is larger, the total time asleep also increases. 
+
+```{r data visualization, message=FALSE, warning=FALSE}
+sleep_data %>% ggplot(aes(min_asleep, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Minutes Asleep", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(min_awake, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Minutes Awake", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(awakenings, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Number of Awakenings", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(time_bed, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Total time in Bed", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(rem, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Minutes in REM", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(light_sleep, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Minutes in Light Sleep", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(deep_sleep, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="Minutes in Deep Sleep", y="Sleep Score")
+
+sleep_data %>% ggplot(aes(restless, sleep_score)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x="% Restless", y="Sleep Score")
+```
+
+A histogram of sleep score displays the distribution, and we see that the distribution is left-skewed and my average sleep score is 75.94. This makes reasonable sense because having a bad nights rest is more likely to occur than a perfect nights sleep. Things like having to wake up early for class or going to bed late due to school work make a bad sleep likelier to occur. 
+
+```{r message=FALSE, warning=FALSE, fig.width = 4, fig.height = 3}
+mean(sleep_data$sleep_score)
+sleep_data %>% ggplot(aes(sleep_score)) + 
+  geom_histogram(binwidth = 2, color = 'black') + 
+  geom_vline(xintercept = mean(sleep_data$sleep_score), col = 'red', lty = 2, lwd = 1) +
+  labs(title = 'Sleep Score Distribution')
+```
+
+## Cross Validation: Data Splitting
+
+The validation set approach for cross-validation will be employed in order to estimate the test error rates that result from fitting various linear models on sleep_data. Cross-validation contains an element of randomness so I used set.seed() to ensure that my results are reproducible down the line.
+
+sleep_data will be split into 2 sets: the training set and the test set. A random sample of 70% of observations (104 obs) will serve as the training set, and the remaining 30% (45 obs) of observations will serve as the validation set. The model is fit on the training set, and the fitted model is used to predict the sleep scores for the observations in the validation set.
+
+```{r data splitting}
+# set.seed() for reproducible results
+set.seed(123)
+train <- sample(1:nrow(sleep_data), 0.70*nrow(sleep_data))
+
+# Sample 75% of observations as training data
+sleep_train <- sleep_data[train,] 
+# remaining 25% as test set
+sleep_test <- sleep_data[-train,]
+
+# sleep scores for training and test set
+y.train <- sleep_train$sleep_score
+y.test <- sleep_test$sleep_score
+```
+
+## Model Building
+
+First I fit a multiple linear regression model to the training set. `min_awake` and `restless` have a p-value < 0.05, meaning they are statistically significant. `time_bed` and `deep_sleep` were not "not defined because of singularities". This is indicative that there is multicollinearity in the predictors. 59.83% of the variability can be explained by this  model. 
+
+```{r multiple linear regression}
+sleep.lm <- lm(sleep_score ~ ., data = sleep_train)
+summary(sleep.lm)
+```
+
+From the correlation matrix, we see that many of the predictors are correlated since more time asleep also means more time spent in the other stages of sleep. `min_asleep` and `time_bed` are perfectly correlated, and this makes sense because the total time spent in bed is typically the same amount of time spent asleep. 
+```{r}
+# Correlation matrix
+cor(sleep_data)
+```
+
+This multicollinearity can be visualized in the plot below.
+```{r message=FALSE, warning=FALSE}
+sleep_data %>% ggplot(aes(min_asleep, time_bed)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x = "Minutes Asleep", y = "Total Time in Bed (min)", title = "Total Time in Bed vs. Time Asleep")
+```
+
+To resolve this issue of multicollinearity, we simply remove `time_bed` and `deep_sleep` from the model. 
+
+```{r message=FALSE, warning=FALSE}
+sleep.lm <- lm(sleep_score ~. - time_bed -deep_sleep, data = sleep_train)
+summary(sleep.lm)
+```
+The training MSE is 29.652 on the training set (75% of the observations) and the test MSE is 24.911.
+```{r}
+pred.train.lm <- predict(sleep.lm, newdata = sleep_train, type = 'response')
+pred.test.lm <- predict(sleep.lm, newdata = sleep_test, type = 'response')
+
+# Training MSE
+mean((pred.train.lm - y.train)^2)
+# Test MSE
+lm.mse = mean((pred.test.lm - y.test)^2)
+lm.mse
+```
+
+## Shrinkage Using the Lasso and Ridge Regression
+
+Setting up the training and test data sets for the shrinkage methods. 
+```{r split data}
+set.seed(123)
+# Building X matrix from data  
+xmod = model.matrix(sleep_score~., sleep_data)[,-1]
+y = sleep_data$sleep_score
+
+set.seed(1) 
+train=sample(1:nrow(xmod), nrow(xmod)*0.7)
+
+xtrain = xmod[train, ]
+ytrain = y[train]
+# The rest as test data
+xtest = xmod[-train, ]
+ytest = y[-train]
+```
+
+#### The Lasso
+
+Using 5-fold cross-validation, the optimal tuning parameter for the lasso model is estimated to be $\lambda=0.805$. The corresponding training error for the lasso regression is 26.899, and the test error is 36.11 In comparison to the linear regression model, the training MSE is smaller, however, the test MSE using the lasso model is larger than the test error using the regression model.
+```{r lasso, message=FALSE, warning=FALSE}
+set.seed(123)
+lasso.mod <- glmnet(xtrain, ytrain, alpha = 1)
+plot(lasso.mod, xvar="lambda", label = TRUE)
+
+cv.lasso <- cv.glmnet(xtrain, ytrain, alpha = 1, nfolds = 5) 
+plot(cv.lasso)
+abline(v = log(cv.lasso$lambda.min), col="red", lwd=3, lty=2)
+bestlam = cv.lasso$lambda.min
+bestlam
+
+lasso.pred.train <- predict(lasso.mod, s = bestlam, newx = xtrain)
+lasso.pred.test <- predict(lasso.mod, s = bestlam, newx = xtest)
+
+# MSEs
+mean((lasso.pred.train-ytrain)^2)
+lasso.mse = mean((lasso.pred.test-ytest)^2)
+lasso.mse
+```
+
+Below, we see that the coefficient estimates of `awakenings`, `time_bed` and `light_sleep`, and `deep_sleep` are exactly zero. Consequently, the lasso model with $\lambda$ chosen by cross-validation only contains 4 out of the 8 predictor variables.
+
+```{r}
+out = glmnet(xmod, y, alpha=1) 
+lasso.coef = predict(out, type="coefficients", s=bestlam)[1:10,]
+lasso.coef
+```
+
+#### Ridge Regression
+
+Now performing a 5-fold cross-validation to choose the optimal tuning parameter to fit the ridge regression model, we find that $\lambda=2.762$. The associated training and test errors for the ridge regression model are 25.487 and 34.34, respectively. Comparing these MSEs to the lasso, the differences are so slight that the MSEs are nearly the same.
+
+```{r ridge regression, message=FALSE, warning=FALSE}
+set.seed(123)
+ridge.mod <- glmnet(xtrain, ytrain, alpha = 0)
+plot(ridge.mod, xvar="lambda", label = TRUE)
+
+cv.ridge <- cv.glmnet(xtrain, ytrain, alpha = 0, folds = 5) 
+plot(cv.ridge)
+abline(v = log(cv.ridge$lambda.min), col="red", lwd=3, lty=2)
+bestlam2 = cv.ridge$lambda.min
+bestlam2
+# Make predictions
+ridge.pred.train <- predict(ridge.mod, s = bestlam2, newx = xtrain)
+ridge.pred.test <- predict(ridge.mod, s = bestlam2, newx = xtest)
+# MSEs
+mean((ridge.pred.train-ytrain)^2)
+ridge.mse = mean((ridge.pred.test-ytest)^2)
+ridge.mse
+```
+
+However the advantage with the lasso over the ridge regression model is that the resulting coefficient estimates from the lasso model are sparse, if not zero. The lasso effectively shrinks the coefficient estimates toward zero, meanwhile, none of the coefficient estimates for the ridge regression model are exactly zero.
+
+```{r}
+# Coefficient estimates for ridge regression model
+out2 = glmnet(xmod, y, alpha=0) 
+ridge.coef = predict(out2, type="coefficients", s=bestlam2)[1:10,]
+ridge.coef
+```
+
+#### Regression Trees
+
+The regression tree fit to my sleep dataset uses 5 out of 8 predictors: `min_asleep`, `min_awake`, `rem`, `deep_sleep`, and `awakenings`. From the figure we see that `min_sleep` is the most indicative predictor of `sleep_score` and is partitioned at 389.5 minutes or about 6.5 hours of sleep. This is intuitive since longer time asleep would seem to improve improve sleep quality, and hence Fitbit's sleep score. After predicting sleep scores on the test set, the test MSE was calculated to be 39.416. This regression tree model performed poorly in comparison to the former models, as indicated by the large test MSE.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(123)
+tree.sleep <- tree(sleep_score ~ ., sleep_train) 
+summary(tree.sleep)
+# Visualize regression tree
+draw.tree(tree.sleep, nodeinfo=TRUE, cex = .5)
+title("Regression Tree fit to sleep_data")
+```
+
+After predicting sleep scores on the training and test set, the training MSE is 19.944 and the test MSE is 44.541. The regression tree model received the lowest training error out of all the former methods, but also received the highest test MSE of all the models thus far. This is an indication that the regression tree model overfitted the data due to high tree complexity. 
+```{r}
+# Predict on train/test set
+tree.pred.train = predict(tree.sleep, sleep_train)
+tree.pred.test = predict(tree.sleep, sleep_test)
+mean((tree.pred.train - y.train)^2)
+regtree.mse = mean((tree.pred.test - y.test)^2)
+regtree.mse
+```
+
+#### Pruning the tree with K-fold CV
+
+The regression tree model performed poorly on the test set, likely because the resulting tree model was too complex. Pruning the tree may be able to reduce variance with little bias. A 10-fold cross-validation was performed to determine the optimal level of tree complexity. Cross-validation estimates that a tree with 4 terminal nodes is the best size of a tree which minimizes the cross-validation estimate of the test error rate. After pruning the tree, the test MSE was calculated to be 31.093 which is a big improvement from the unpruned regression tree model.
+```{r message=FALSE, warning=FALSE}
+set.seed(123)
+# K-fold cross-validation
+cv.sleep <- cv.tree(tree.sleep, K=10)
+
+# CV determines best size
+bestcv = min(cv.sleep$size[cv.sleep$dev == min(cv.sleep$dev)])
+bestcv
+# prune the tree
+prune.sleep <- prune.tree(tree.sleep, best = bestcv)
+draw.tree(prune.sleep, nodeinfo = TRUE, cex = 0.6)
+title("Pruned Tree of Size 4")
+```
+
+After pruning the tree and predicting sleep score on the training and validation sets, train MSE = 19.944 and test MSE = 27.588 which is a big improvement from the unpruned regression tree model.
+```{r}
+set.seed(123)
+# Predict on train/test set
+pred.prune.train = predict(tree.sleep, sleep_train)
+pred.prune.test = predict(prune.sleep, sleep_test)
+# MSEs
+mean((pred.prune.train - y.train)^2)
+prune.mse = mean((pred.prune.test - y.test)^2)
+prune.mse
+```
+
+#### Random Forest
+
+Next, I fit a random forest model on the training and test sets and yielded a train MSE of 9.736 and a test MSE of 23.316. The random forest model has yielded the lowest training error out of all the models, however its test MSE is over double its training error meaning the model was overfitted.
+```{r message=FALSE, warning=FALSE}
+set.seed(123)
+sleep.rf <- randomForest(sleep_score ~ ., data = sleep_train, importance=TRUE)
+sleep.rf
+
+# Predictions on train/test set
+pred.rf.train <- predict(sleep.rf, newdata = sleep_train)
+pred.rf.test <- predict(sleep.rf, newdata = sleep_test) 
+
+# MSE 
+mean((pred.rf.train - y.train)^2)
+rf.mse = mean((pred.rf.test - y.test)^2)
+rf.mse
+```
+
+The importancce() function indicates which variables are most important in the random forest model, and the plot below allows us to visualize the importance of the variables. The results indicate that across all trees in the random forests, the total time asleep (`min_asleep`) and minutes spent in REM sleep stage (`rem`) are the two most important variables.
+```{r message=FALSE, warning=FALSE}
+importance(sleep.rf)
+varImpPlot(sleep.rf, sort=T, main="Variable Importance for sleep.rf", n.var=5)
+```
+
+#### Bagging 
+
+Using all 9 predictors for each split in the tree, the test MSE associated with the bagged regression tree is 22.857, which is very similar but ever so slightly smaller than that of the random forests test MSE. However, bagging performed better than a optimally-pruned single tree.
+```{r bagging, message=FALSE, warning=FALSE}
+set.seed(123)
+bag.sleep <- randomForest(sleep_score ~ ., data = sleep_train, mtry = 9, importance=TRUE)
+bag.sleep
+plot(bag.sleep)
+pred.bag = predict(bag.sleep, newdata=sleep_test)
+bag.mse = mean((pred.bag - y.test)^2)
+bag.mse
+```
+
+#### Boosting
+
+Boosted regression trees were fit to sleep_data using the gbm() package. `min_asleep` and `rem` have a relative influence of 36.920 and 19.637, respectively, and have the most influence on `sleep_score`. 
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+boost.sleep <- gbm(sleep_score ~ ., data = sleep_train, distribution = "gaussian")
+summary(boost.sleep)
+```
+
+Producing partial dependence plots illustrate the effect `min_asleep` and `rem` have on `sleep_score` after integrating out all other predictors. 
+
+```{r, message=FALSE, warning=FALSE}
+par(mfrow =c(1,2)) 
+plot(boost.sleep, i="min_asleep")
+plot(boost.sleep, i="rem")
+```
+
+The boosted model can now be used to predict `sleep_score` on the test set. The test MSE for the boosted regression tree is calculated to be 28.08, and the training MSE is 23.0678 The boosted model did not perform better than bagging, but did perform better than the optimally-pruned single tree.
+
+```{r message=FALSE, warning=FALSE}
+pred.boost.train <- predict(boost.sleep, newdata = sleep_train)
+pred.boost.test <- predict(boost.sleep, newdata = sleep_test)
+
+mean((pred.boost.train - y.train)^2)
+boost.mse = mean((pred.boost.test - y.test)^2)
+boost.mse
+```
+
+## Model Selection and Performance 
+
+I created a data frame of all the models and their associated test MSEs to take a better look side by side. The bagged tree model received the lowest test MSE of 22.522, but is incredibly similar to the random forest model's test MSE.
+```{r}
+all.mse = c(lm.mse, lasso.mse, ridge.mse, regtree.mse, prune.mse, rf.mse, bag.mse, boost.mse)
+  
+Model=c("Multiple Linear Regression",
+                    "Lasso",
+                    "Ridge Regression",
+                    "Regression Tree",
+                    "Optimal Pruned Tree",
+                    "Random Forest",
+                    "Bagged Tree",
+                    "Boosted Tree")
+
+df = data.frame(Model, Test_MSE=all.mse)
+df[order(df$Test_MSE),]
+```
+Because the bagged tree model and the random forest model have very similar test MSE, calculating their respective $R^2$ values will provide more information on which model is a better fit.
+```{r}
+# Computing R^2 for bagged tree model
+rss <- sum((pred.bag - y.test) ^ 2)  
+tss <- sum((y.test - mean(y.test)) ^ 2)
+rsq <- 1 - rss/tss
+rsq
+
+# R^2 for random forest
+rss <- sum((pred.rf.test - y.test) ^ 2)  
+tss <- sum((y.test - mean(y.test)) ^ 2)
+rsq <- 1 - rss/tss
+rsq
+
+# rmse for bagged
+rmse(y.test, pred.bag)
+# rmse for random forest
+rmse(y.test, pred.rf.test)
+```
+72.41% of total variability can be explained by the bagged regression tree, whereas 71.85% of total variability can be explained by the random forest of regression tree. Although these differences are minuscule, I think the bagged model is the best model because it had a smaller test MSE, $R^2$, and `rmse` of 4.78 versus the random forest's rmse of 4.83. 
+
+```{r message=FALSE, warning=FALSE}
+final_model = bag.sleep
+model_pred <- predict(final_model, newdata = sleep_test)
+
+model_df <- data.frame(actual=y.test, predicted=model_pred)
+model_df %>% ggplot(aes(x=y.test, y=model_pred)) +
+  geom_point() +
+  geom_abline(col='blue', lty = 2) +
+  labs(title = 'Bagged Model Prediction vs. Observed Sleep Score on Test Data',
+       x = 'Actual Sleep Score',
+       y = 'Predicted Sleep Score') 
+head(model_df)
+```
+
+### Conclusion
+This model may be useful to both Fitbit as a company and their consumers. By training a model to correctly predict sleep scores, Fitbit can provide ways to increase sleep score personalized to the user. The boosted model showed that the top three most important predictors of sleep score are time asleep, time in REM stage, and restlessness. A user may be getting 7-8 hours of sleep a night but still receiving low sleep scores which could be explained by a large proportion of unconscious restlessness which might suggest getting more exercise throughout the day to minimize restlessness.
+
+The models I fit to my dataset did not perform exceptionally well, but also did not perform terribly either. I think if I were to revise this project, I would collect more observations. Not only that, but I would also like to see how Fitbit's other metrics affect sleep score such as daily steps, calories burned, and activity level, etc. Expanding the dataset would have made the model not only more interesting, but also provide Fitbit users significant pieces of information about the interactions between sleep, activity, and overall wellbeing. 
+
+
+
