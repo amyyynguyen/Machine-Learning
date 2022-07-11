@@ -1,0 +1,202 @@
+---
+title: "Homework 2"
+author: "Amy Nguyen"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results='hide'}
+library(tidyverse) 
+library(ISLR) 
+library(ROCR)
+```
+## Linear Regression
+### 1. 
+```{r}
+car_lm <- lm(mpg ~ cylinders + displacement + horsepower + weight + acceleration + year + origin, Auto)
+summary(car_lm)
+```
+Displacement, weight, and year are statistically significant to mpg within a 0.01 threshold, so we can reject the null hypothesis that there is no linear association between mpg and any of the predictors
+
+### 2.
+```{r}
+MSE <- mean((car_lm$residuals)^2)
+MSE
+```
+The training MSE of this model is 10.85.
+
+### 3.
+```{r}
+predict(car_lm, data.frame(origin = 2, cylinders = 4, displacement = 122, horsepower = 105, weight = 3100, acceleration = 32, year = 91), interval = 'prediction')
+```
+The predicted gas mileage for a car with these characteristics is 35.14 MPG.
+
+### 4.
+```{r question 4}
+origin_lm = lm(mpg ~ origin, Auto)
+
+american = predict(origin_lm, data.frame(origin = 1), interval = 'prediction')
+european = predict(origin_lm, data.frame(origin = 2), interval = 'prediction')
+japanese = predict(origin_lm, data.frame(origin = 3), interval = 'prediction')
+
+japanese - american
+european - american
+```
+There is a 10.95 difference between the MPG of Japanese and American cars. There is a 5.477 difference in MPG between European and American cars.
+
+### 5.
+```{r}
+displ_lm = lm(mpg ~ displacement, Auto)
+summary(displ_lm)
+```
+There would be about a 6 unit decrease in mpg associated with a 10 unit increase in displacement.
+
+## Algae Classification using Logistic regression
+```{r, message=FALSE, warning=FALSE}
+algae <- read_table2("algaeBloom.txt", col_names=
+c('season','size','speed','mxPH','mnO2','Cl','NO3','NH4',
+'oPO4','PO4','Chla','a1','a2','a3','a4','a5','a6','a7'),
+na="XXXXXXX")
+
+algae.transformed <- algae %>% mutate_at(vars(4:11), funs(log(.)))
+algae.transformed <- algae.transformed %>%
+  mutate_at(vars(4:11),funs(ifelse(is.na(.),median(.,na.rm=TRUE),.)))
+# a1 == 0 means low
+algae.transformed <- algae.transformed %>% mutate(a1 = factor(as.integer(a1 > 5), levels = c(0, 1)))
+
+calc_error_rate <- function(predicted.value, true.value){
+return(mean(true.value!=predicted.value))
+}
+
+set.seed(1)
+test.indices = sample(1:nrow(algae.transformed), 50)
+algae.train=algae.transformed[-test.indices,]
+algae.test=algae.transformed[test.indices,]
+```
+
+### 1.
+$$p(z) = \frac{e^z}{1+e^z}$$
+$$p(1+e^z)=e^z$$
+$$p+pe^z = e^z$$
+
+$$e^z - pe^z = p$$
+$$e^z = \frac{p}{1-p}$$
+$$z(p) = log(\frac{p}{1-p})$$
+$$z(p) = ln(\frac{p}{1-p})$$
+### 2.
+Increasing $x_1$ by two will change the odds of the outcome  by $e^{2\beta_1}$. As x1 approaches positive infinity, p approaches infinity, and as $x_1$ approaches negative infinity, p approaches 1.
+
+### 3.
+```{r}
+log_algae <- glm(a1 ~ . , data = algae.train, family = "binomial")
+
+# training error
+train_prob <- predict(log_algae, type = "response")
+algae.train = algae.train %>%
+  mutate(predval=as.factor(ifelse(train_prob <= 0.5, "0", "1")))
+algae.train$predval <- factor(algae.train$predval)
+train_error <- calc_error_rate(algae.train$predval, algae.train$a1)
+
+# test error
+test_prob <- predict(log_algae, algae.test, type = "response")
+algae.test = algae.test %>%
+  mutate(predval = as.factor(ifelse(test_prob<=0.5, "0", "1")))
+algae.test$predval <- factor(algae.test$predval)
+test_error <- calc_error_rate(algae.test$predval, algae.test$a1)
+
+head(train_prob)
+head(test_prob)
+train_error
+test_error
+```
+
+
+### 4.
+```{r}
+pred = prediction(test_prob, algae.test$a1)
+perf= performance(pred, measure = 'tpr', x.measure = 'fpr')
+plot(perf, col = 2, lwd = 3, main = "ROC curve")
+abline(0,1)
+
+tpr = performance(pred,'tpr')@y.values[[1]]
+fpr = performance(pred, 'fpr')@y.values[[1]]
+plot(fpr,tpr,type='l',col=3,lwd=3,main="ROC curve")
+abline(0,1)
+
+auc = performance(pred, 'auc')@y.values
+auc
+```
+The AUC is 0.713.
+
+## Fundamentals of the bootstrap
+
+### 1.
+$$(1 - \frac{1}{n})^n$$
+
+### 2. 
+```{r}
+(1 - 1/1000)^1000
+```
+The probability for n=1000 is 0.3677
+
+### 3.
+```{r}
+obs <- sample(1:1000, size=1000, replace=TRUE)
+missing <- 1000 - length(unique(obs))
+missing/1000
+```
+The ratio of missing observations is 0.362 which is very close to 0.3677, thus we can consider that our calculation is reasonable.
+
+## Cross-validation estimate of test error
+### 1.
+```{r, warning=FALSE}
+set.seed(123)
+dat = subset(Smarket, select = -c(Year,Today))
+dat$Direction = ifelse(dat$Direction == "Up", 1, 0)
+train = dat[1:700,]
+test = dat[701:nrow(dat),]
+train$Direction <- factor(train$Direction)
+
+train_fit = glm(Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume, data =
+                  train, family = "binomial")
+summary(train_fit)
+test_prob = predict(train_fit, test, type="response")
+
+test = test %>%
+  mutate(predval=as.factor(ifelse(test_prob <= 0.5, "0", "1")))
+calc_error_rate(test$predval, test$Direction)
+
+```
+The test error rate is 0.5436.
+### 2. 
+```{r, warning=FALSE}
+set.seed(123)
+do.chunk <- function(chunkid, folddef, dat, ...){
+  # Get training index
+  train = (folddef!=chunkid)
+  # Get training set and validation set
+  dat.train = dat[train, ]
+  dat.val = dat[-train, ]
+  # Train logistic regression model on training data
+  fit.train = glm(Direction ~ ., family = binomial, data = dat.train)
+  # get predicted value on the validation set
+  pred.val = predict(fit.train, newdata = dat.val, type = "response")
+  pred.val = ifelse(pred.val > .5, 1,0)
+  data.frame(fold = chunkid, val.error = mean(pred.val != dat.val$Direction))
+    
+}
+nfold = 10
+folds = cut(1:nrow(train), breaks=nfold, labels=FALSE) %>% sample()
+error.folds = NULL
+tmp = do.chunk(chunkid = 10, folddef=folds, dat = dat)
+error.folds = rbind(error.folds, tmp)
+error = error.folds$val.error
+error
+```
+Using the 10-fold cross-validation approach, the test error is estimated to be 0.4748.
+
+
+

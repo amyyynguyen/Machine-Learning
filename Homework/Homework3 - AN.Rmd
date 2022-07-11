@@ -1,0 +1,194 @@
+---
+title: "Homework 3"
+author: "Amy Nguyen"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(ISLR) 
+library(glmnet) 
+library(tree) 
+library(maptree) 
+library(randomForest) 
+library(gbm) 
+library(ROCR)
+```
+
+## Predicting carseats sales using regularized regression methods 
+
+```{r}
+set.seed(123)
+dat <- model.matrix(Sales~., Carseats) 
+train = sample(nrow(dat), 30)
+x.train = dat[train, ]
+y.train = Carseats[train, ]$Sales
+# The rest as test data
+x.test = dat[-train, ]
+y.test = Carseats[-train, ]$Sales
+```
+
+###(a)
+```{r}
+set.seed(123)
+lambda.list.ridge = 1000 * exp(seq(0, log(1e-5), length = 100))
+ridge_mod = glmnet(dat, Carseats$Sales, alpha = 0, lambda = lambda.list.ridge)
+```
+
+```{r}
+cv.out.ridge = cv.glmnet(x.train, y.train, alpha = 0, nfolds = 5)
+bestlam = cv.out.ridge$lambda.min
+bestlam
+ridge.mod = glmnet(x.train, y.train, alpha = 0, lambda = bestlam)
+out <- glmnet(dat, Carseats$Sales, alpha = 0)
+predict(out, type = "coefficients", s = bestlam)
+```
+The best tuning parameter is $\lambda=0.1265$.
+
+###(b)
+```{r}
+plot(cv.out.ridge)
+ridge.pred <- predict(ridge.mod, s = bestlam, newx = x.test)
+mean((ridge.pred-y.test)^2)
+```
+The plot displays the training MSE as a function of $\lambda$ and the test MSE 1.4602.
+
+###(c)
+```{r}
+lambda.list.lasso = 2 * exp(seq(0, log(1e-4), length = 100))
+lasso.mod <- glmnet(x.train, y.train, alpha = 1, lambda = lambda.list.lasso)
+set.seed(1)
+cv.out.lasso = cv.glmnet(x.train, y.train, alpha = 1) 
+plot(cv.out.lasso)
+abline(v = log(cv.out.lasso$lambda.min), col="red", lwd=3, lty=2)
+bestlam <- cv.out.lasso$lambda.min
+bestlam
+out = glmnet(dat, Carseats$Sales, alpha=1, lambda=lambda.list.lasso)
+predict(out,type="coefficients",s=bestlam)
+```
+Using 10-fold CV, the optimal tuning parameter $\lambda$ is 0.0306. The 
+
+```{r}
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x.test)
+mean((lasso.pred-y.test)^2)
+```
+The test MSE associated with the tuning parameter is 1.709, which is slightly larger, yet very similar to the test MSE of the ridge regression chosen by cross-validation.
+
+## Analyzing Drug Use
+
+```{r, warning=FALSE, message=F}
+drug <- read_csv('drug.csv', 
+                 col_names = c('ID','Age','Gender','Education',
+                               'Country','Ethnicity','Nscore',
+                               'Escore','Oscore','Ascore','Cscore',
+                               'Impulsive','SS','Alcohol','Amphet','Amyl',
+                               'Benzos','Caff','Cannabis','Choc',
+                               'Coke','Crack','Ecstasy','Heroin','Ketamine',
+                               'Legalh','LSD','Meth','Mushrooms',
+                               'Nicotine','Semer','VSA'))
+```
+###(a)
+```{r}
+drug <- drug %>% mutate(recent_cannabis_use =
+                                  factor(ifelse(Cannabis >= "CL3", "Yes", "No"), 
+                                         levels=c("No", "Yes")))
+
+class(drug$recent_cannabis_use)
+levels(drug$recent_cannabis_use)
+```
+
+### (b)
+```{r}
+drug_subset <- drug %>% select(Age:SS, recent_cannabis_use)
+```
+
+### (c)
+```{r}
+set.seed(1)
+train = sample(1:nrow(drug_subset), 1100)
+drug_train <- drug_subset[train,]
+drug_test <- drug_subset[-train,]
+```
+### (d)
+```{r}
+glm.fit <- glm(recent_cannabis_use ~ ., data=drug_train, family=binomial)
+summary(glm.fit)
+```
+
+### (e)
+```{r}
+tree.drug <- tree(recent_cannabis_use~., data = drug_train)
+```
+
+### (f)
+```{r}
+set.seed(3)
+cv = cv.tree(tree.drug, FUN=prune.misclass, K=5)
+cv$size
+cv$dev
+best_size = min(cv$size[cv$dev == min(cv$dev)])
+best_size
+```
+There is a tie between tree of size 6 and size 7 with the same minimum cross validated error rate of 253. The best size obtained tree is of size 6.
+
+### (g)
+```{r}
+pruned.drug = prune.misclass(tree.drug, best = best_size)
+draw.tree(pruned.drug, nodeinfo = TRUE, cex = 0.5)
+title("Classification Tree for Drug Use on Training Set")
+```
+Country is the first variable split in the decision tree.
+
+### (h)
+```{r}
+pred.drug = predict(pruned.drug, drug_test, type = "class")
+error = table(pred.drug, drug_test$recent_cannabis_use)
+error
+
+TPR = error[2,2]/sum(error[c(1,2),2])
+TPR 
+ 
+FPR = error[2,1]/sum(error[c(1,2),1])
+FPR
+```
+
+### (i)
+```{r}
+drug.gbm <- gbm(recent_cannabis_use ~ ., data=drug_train, distribution="gaussian", n.trees=1000, shrinkage=0.01)
+summary(drug.gbm)                
+```
+
+The most important predictors are Age and SS having the most influence, and also Nscore and Impulsive.
+
+### (j)
+```{r}
+set.seed(131)
+drug.random <- randomForest(recent_cannabis_use ~ ., data=drug_train, importance=TRUE)
+drug.random
+importance(drug.random)
+```
+The out of bag estimate error is 18.91%. 3 variables were randomly considered at each split in the trees and 500 trees were used. The order of important variables are very similar for random forrest and boosting models, but are some differences such as between Age and Oscore.
+
+### (k)
+```{r}
+set.seed(123)
+prob_boost = predict(drug.gbm, newdata = drug_test, type = "response")
+yhat_boost = ifelse(prob_boost >= 0.2, "Yes", "No")
+prob_rand = predict(drug.random, newdata = drug_test, type = "prob")
+yhat_tree = ifelse(prob_rand[, 2] >= 0.2, "Yes", "No")
+boost.matrix = table(true = drug_test$recent_cannabis_use, pred = yhat_boost)
+rf.matrix = table(true = drug_test$recent_cannabis_use, pred = yhat_tree)
+
+boost.matrix
+rf.matrix
+```
+In the random tree model, 414/621 of people predicted and did in fact use cannabis recently.
+
+
