@@ -1,0 +1,97 @@
+---
+title: "Homework 4"
+author: "Amy Nguyen"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Clustering and dimension reduction for gene expression data
+
+```{r message=FALSE, results='hide'}
+library(tidyverse) 
+library(ROCR) 
+library(ggridges) 
+library(dendextend)
+```
+
+```{r, warning=FALSE, message=FALSE}
+leukemia_data <- read_csv("leukemia_data.csv")
+```
+
+#### (a)
+```{r}
+leukemia_data <- leukemia_data %>%
+  mutate(Type = as.factor(Type))
+table(leukemia_data$Type)
+```
+From the table, the leukemia subtype that occurs the least is BCR-ABL with 15 patients.
+
+#### (b)
+```{r}
+pr.out = prcomp(leukemia_data[,c(-1)], scale=TRUE, center=TRUE)
+pr.var = pr.out$sdev^2
+pve <- pr.var / sum(pr.var)
+
+par(mfrow=c(1,2))
+plot(pve, xlab="Principal Component",
+     ylab="PVE ", type='b', cex=0.5)
+plot(cumsum(pve), xlab="Principal Component ",
+     ylab=" Cumulative PVE ",  type='b', cex=0.5)
+```
+```{r}
+which(cumsum(pve) >= 0.9)[1]
+```
+At least 201 PCs are needed in order to explain 90% of the total variation in the data.
+
+#### (c)
+```{r}
+rainbow_colors <- rainbow(7)
+plot_colors <- rainbow_colors[leukemia_data$Type]
+plot(pr.out$x[,c(1,2)], col = plot_colors, cex = 0.0001)
+text(pr.out$x[,c(1,2)], col = plot_colors, labels = leukemia_data$Type, cex = 0.5)
+```
+
+The subtype T-ALL is most clearly separated from the other groups along the PC2 axis.
+```{r}
+pr.out$rotation[, 1] %>% 
+  abs %>% sort(decreasing = TRUE) %>% head(6)
+```
+The top 6 genes with the highest absolute loadings for PC1 are SEMA3F, CCT2, LDHB, COX6C, SNRPD2, and ELK3.
+
+#### (d)
+```{r warning=FALSE}
+plot(pr.out$x[,c(1,3)], col = plot_colors, cex = 0.0001)
+text(pr.out$x[,c(1,3)], col = plot_colors, labels = leukemia_data$Type, cex = 0.5)
+```
+
+Based on the plot, PC3 does seem to do a slightly better job at disciminating between leukemia types than PC2. It is clear in this plot that leukemia of the same subtypes tend to have pretty similar gene expression levels. 
+
+#### (e)
+```{r warning=FALSE}
+leukemia_subset <- leukemia_data %>% 
+  filter(leukemia_data$Type == 'T-ALL' | leukemia_data$Type == 'TEL-AML1' |
+           leukemia_data$Type == 'Hyperdip50')
+set.seed(1)
+hc = hclust(dist(leukemia_subset), method = 'complete')
+
+dend1 <- as.dendrogram(hc)
+dend1 %>% 
+  color_branches(k=3) %>% 
+  color_labels(k=3) %>% 
+  set("labels_cex", 0.3) %>% 
+  set_labels(labels=leukemia_subset$Type) %>% 
+  plot(horiz=TRUE, main="Dendrogram of Three Leukemia Subtypes")
+  
+dend2 <- as.dendrogram(hc)
+dend2 %>% 
+  color_branches(k=5) %>% 
+  color_labels(k=5) %>% 
+  set("labels_cex", 0.3) %>% 
+  set_labels(labels=leukemia_subset$Type) %>% 
+  plot(horiz=TRUE, main="Dendrogram of Five Leukemia Subtypes")
+```
